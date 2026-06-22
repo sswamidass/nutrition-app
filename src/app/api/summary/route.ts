@@ -5,12 +5,12 @@ export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get('date');
   if (!date) return NextResponse.json({ error: 'date required' }, { status: 400 });
 
-  const [meals, water_logs, goals, totals] = [
+  const [meals, water_logs, goals, totals] = await Promise.all([
     getMealsByDate(date),
     getWaterByDate(date),
     getGoals(),
     getDayTotals(date),
-  ];
+  ]);
 
   return NextResponse.json({ date, meals, water_logs, goals, totals });
 }

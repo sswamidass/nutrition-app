@@ -1,22 +1,24 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import Database from 'better-sqlite3';
+import { createClient, type InValue } from '@libsql/client';
 import path from 'path';
 import fs from 'fs';
 
 // ── Database ────────────────────────────────────────────────────────────────
+// One client serves local and hosted, switched by env:
+//   - Local:  DATABASE_URL unset -> file:./data/nutrition.db
+//   - Hosted: DATABASE_URL=libsql://<db>.turso.io + DATABASE_AUTH_TOKEN
+//             (point the MCP server at the same Turso DB as the web app so
+//              meals logged via Claude show up on your phone, and vice versa)
 
-const DB_DIR = path.join(process.cwd(), 'data');
-const DB_PATH = path.join(DB_DIR, 'nutrition.db');
+const LOCAL_DIR = path.join(process.cwd(), 'data');
+const url = process.env.DATABASE_URL || `file:${path.join(LOCAL_DIR, 'nutrition.db')}`;
+if (url.startsWith('file:') && !fs.existsSync(LOCAL_DIR)) fs.mkdirSync(LOCAL_DIR, { recursive: true });
 
-if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+const db = createClient({ url, authToken: process.env.DATABASE_AUTH_TOKEN });
 
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-
-db.exec(`
+const SCHEMA = `
   CREATE TABLE IF NOT EXISTS meals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,
@@ -57,31 +59,47 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_meals_date ON meals(date);
   CREATE INDEX IF NOT EXISTS idx_water_date ON water_logs(date);
-`);
+`;
 
-const goalsCount = db.prepare('SELECT COUNT(*) as count FROM nutrition_goals').get() as { count: number };
-if (goalsCount.count === 0) {
-  db.prepare(`INSERT INTO nutrition_goals (daily_calories,daily_protein_g,daily_carbs_g,daily_fat_g,daily_sodium_mg,daily_water_ml) VALUES (2000,150,250,65,2300,2500)`).run();
+async function initDb() {
+  await db.executeMultiple(SCHEMA);
+  const c = await db.execute('SELECT COUNT(*) as count FROM nutrition_goals');
+  if (Number(c.rows[0].count) === 0) {
+    await db.execute(`INSERT INTO nutrition_goals (daily_calories,daily_protein_g,daily_carbs_g,daily_fat_g,daily_sodium_mg,daily_water_ml) VALUES (2000,150,250,65,2300,2500)`);
+  }
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Query helpers ────────────────────────────────────────────────────────────
 
-function today(): string {
-  const tz = (db.prepare("SELECT value FROM settings WHERE key='timezone'").get() as { value: string } | undefined)?.value;
-  if (tz) {
-    return new Date().toLocaleDateString('en-CA', { timeZone: tz });
-  }
+type Row = Record<string, unknown>;
+
+async function all(sql: string, args: InValue[] = []): Promise<Row[]> {
+  return (await db.execute({ sql, args })).rows as unknown as Row[];
+}
+async function get(sql: string, args: InValue[] = []): Promise<Row | undefined> {
+  return (await db.execute({ sql, args })).rows[0] as unknown as Row | undefined;
+}
+async function run(sql: string, args: InValue[] = []) {
+  return db.execute({ sql, args });
+}
+
+async function today(): Promise<string> {
+  const tz = (await get("SELECT value FROM settings WHERE key='timezone'"))?.value as string | undefined;
+  if (tz) return new Date().toLocaleDateString('en-CA', { timeZone: tz });
   return new Date().toISOString().split('T')[0];
 }
 
-function getGoals() {
-  return db.prepare('SELECT * FROM nutrition_goals ORDER BY id DESC LIMIT 1').get() as Record<string, number | string | null>;
+async function getGoals(): Promise<Record<string, number>> {
+  const g = (await get('SELECT * FROM nutrition_goals ORDER BY id DESC LIMIT 1'))!;
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(g)) out[k] = v == null ? 0 : Number(v);
+  return out;
 }
 
-function dayTotals(date: string) {
-  const meals = db.prepare('SELECT COALESCE(SUM(calories),0) as cal, COALESCE(SUM(protein_g),0) as pro, COALESCE(SUM(carbs_g),0) as carb, COALESCE(SUM(fat_g),0) as fat FROM meals WHERE date=?').get(date) as { cal: number; pro: number; carb: number; fat: number };
-  const water = db.prepare('SELECT COALESCE(SUM(amount_ml),0) as ml FROM water_logs WHERE date=?').get(date) as { ml: number };
-  return { calories: meals.cal, protein_g: meals.pro, carbs_g: meals.carb, fat_g: meals.fat, water_ml: water.ml };
+async function dayTotals(date: string) {
+  const m = (await get('SELECT COALESCE(SUM(calories),0) cal, COALESCE(SUM(protein_g),0) pro, COALESCE(SUM(carbs_g),0) carb, COALESCE(SUM(fat_g),0) fat FROM meals WHERE date=?', [date]))!;
+  const w = (await get('SELECT COALESCE(SUM(amount_ml),0) ml FROM water_logs WHERE date=?', [date]))!;
+  return { calories: Number(m.cal), protein_g: Number(m.pro), carbs_g: Number(m.carb), fat_g: Number(m.fat), water_ml: Number(w.ml) };
 }
 
 function text(obj: unknown): { content: [{ type: 'text'; text: string }] } {
@@ -92,7 +110,6 @@ function text(obj: unknown): { content: [{ type: 'text'; text: string }] } {
 
 const server = new McpServer({ name: 'nutrition', version: '1.0.0' });
 
-// log_meal
 server.tool('log_meal', 'Log a meal entry with nutritional information', {
   description: z.string().describe('Food name and description'),
   meal_type: z.enum(['breakfast', 'lunch', 'dinner', 'snack']).default('snack'),
@@ -105,45 +122,37 @@ server.tool('log_meal', 'Log a meal entry with nutritional information', {
   sodium_mg: z.number().min(0).default(0),
   logged_at: z.string().optional().describe('ISO date YYYY-MM-DD, defaults to today'),
   notes: z.string().optional(),
-}, (args) => {
-  const date = args.logged_at ?? today();
-  const result = db.prepare(`
-    INSERT INTO meals (date,meal_type,description,calories,protein_g,carbs_g,fat_g,fiber_g,sugar_g,sodium_mg,notes)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)
-  `).run(date, args.meal_type, args.description, args.calories, args.protein_g, args.carbs_g, args.fat_g, args.fiber_g, args.sugar_g, args.sodium_mg, args.notes ?? null);
-  const meal = db.prepare('SELECT * FROM meals WHERE id=?').get(result.lastInsertRowid);
-  const totals = dayTotals(date);
-  const goals = getGoals();
-  return text({ meal, day_totals: totals, calories_remaining: Number(goals.daily_calories) - totals.calories });
+}, async (args) => {
+  const date = args.logged_at ?? await today();
+  const rs = await run(
+    `INSERT INTO meals (date,meal_type,description,calories,protein_g,carbs_g,fat_g,fiber_g,sugar_g,sodium_mg,notes)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING *`,
+    [date, args.meal_type, args.description, args.calories, args.protein_g, args.carbs_g, args.fat_g, args.fiber_g, args.sugar_g, args.sodium_mg, args.notes ?? null]
+  );
+  const totals = await dayTotals(date);
+  const goals = await getGoals();
+  return text({ meal: rs.rows[0], day_totals: totals, calories_remaining: goals.daily_calories - totals.calories });
 });
 
-// get_meals_today
-server.tool('get_meals_today', 'Get all meals logged today', {}, () => {
-  const date = today();
-  const meals = db.prepare('SELECT * FROM meals WHERE date=? ORDER BY logged_at').all(date);
-  const totals = dayTotals(date);
-  return text({ date, meals, totals });
+server.tool('get_meals_today', 'Get all meals logged today', {}, async () => {
+  const date = await today();
+  return text({ date, meals: await all('SELECT * FROM meals WHERE date=? ORDER BY logged_at', [date]), totals: await dayTotals(date) });
 });
 
-// get_meals_by_date
 server.tool('get_meals_by_date', 'Get all meals for a specific date', {
   date: z.string().describe('YYYY-MM-DD'),
-}, (args) => {
-  const meals = db.prepare('SELECT * FROM meals WHERE date=? ORDER BY logged_at').all(args.date);
-  const totals = dayTotals(args.date);
-  return text({ date: args.date, meals, totals });
+}, async (args) => {
+  return text({ date: args.date, meals: await all('SELECT * FROM meals WHERE date=? ORDER BY logged_at', [args.date]), totals: await dayTotals(args.date) });
 });
 
-// get_meals_by_date_range
 server.tool('get_meals_by_date_range', 'Get all meals between two dates (inclusive)', {
   start_date: z.string().describe('YYYY-MM-DD'),
   end_date: z.string().describe('YYYY-MM-DD'),
-}, (args) => {
-  const meals = db.prepare('SELECT * FROM meals WHERE date BETWEEN ? AND ? ORDER BY date,logged_at').all(args.start_date, args.end_date);
+}, async (args) => {
+  const meals = await all('SELECT * FROM meals WHERE date BETWEEN ? AND ? ORDER BY date,logged_at', [args.start_date, args.end_date]);
   return text({ start_date: args.start_date, end_date: args.end_date, meals, count: meals.length });
 });
 
-// update_meal
 server.tool('update_meal', 'Update fields of an existing meal entry', {
   id: z.number().int(),
   description: z.string().optional(),
@@ -156,25 +165,23 @@ server.tool('update_meal', 'Update fields of an existing meal entry', {
   sugar_g: z.number().min(0).optional(),
   sodium_mg: z.number().min(0).optional(),
   notes: z.string().optional(),
-}, (args) => {
+}, async (args) => {
   const { id, ...updates } = args;
-  const fields = Object.keys(updates).filter(k => updates[k as keyof typeof updates] !== undefined);
-  if (fields.length === 0) return text('No fields to update');
-  const setClause = fields.map(f => `${f}=@${f}`).join(', ');
-  db.prepare(`UPDATE meals SET ${setClause} WHERE id=@id`).run({ ...updates, id });
-  const meal = db.prepare('SELECT * FROM meals WHERE id=?').get(id);
-  return text({ updated: meal });
+  const keys = Object.keys(updates).filter(k => updates[k as keyof typeof updates] !== undefined);
+  if (keys.length === 0) return text('No fields to update');
+  const setClause = keys.map(k => `${k}=?`).join(', ');
+  const vals = keys.map(k => updates[k as keyof typeof updates] as InValue);
+  const rs = await run(`UPDATE meals SET ${setClause} WHERE id=? RETURNING *`, [...vals, id]);
+  return text({ updated: rs.rows[0] });
 });
 
-// delete_meal
 server.tool('delete_meal', 'Delete a meal entry by ID', {
   id: z.number().int(),
-}, (args) => {
-  const result = db.prepare('DELETE FROM meals WHERE id=?').run(args.id);
-  return text({ deleted: result.changes > 0, id: args.id });
+}, async (args) => {
+  const rs = await run('DELETE FROM meals WHERE id=?', [args.id]);
+  return text({ deleted: rs.rowsAffected > 0, id: args.id });
 });
 
-// set_nutrition_goals
 server.tool('set_nutrition_goals', "Set the user's daily calorie and macro targets", {
   daily_calories: z.number().min(0).optional(),
   daily_protein_g: z.number().min(0).optional(),
@@ -184,33 +191,28 @@ server.tool('set_nutrition_goals', "Set the user's daily calorie and macro targe
   daily_sugar_g: z.number().min(0).optional(),
   daily_sodium_mg: z.number().min(0).optional(),
   daily_water_ml: z.number().min(0).optional(),
-}, (args) => {
-  const current = getGoals() as Record<string, unknown>;
-  const merged = { ...current, ...Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined)) };
-  db.prepare(`
-    UPDATE nutrition_goals SET
-      daily_calories=@daily_calories, daily_protein_g=@daily_protein_g,
-      daily_carbs_g=@daily_carbs_g, daily_fat_g=@daily_fat_g,
-      daily_fiber_g=@daily_fiber_g, daily_sugar_g=@daily_sugar_g,
-      daily_sodium_mg=@daily_sodium_mg, daily_water_ml=@daily_water_ml,
-      updated_at=datetime('now')
-    WHERE id=@id
-  `).run(merged);
-  return text({ goals: getGoals() });
+}, async (args) => {
+  const current = await getGoals();
+  const merged = { ...current, ...Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined)) } as Record<string, number>;
+  await run(
+    `UPDATE nutrition_goals SET daily_calories=?, daily_protein_g=?, daily_carbs_g=?, daily_fat_g=?,
+       daily_fiber_g=?, daily_sugar_g=?, daily_sodium_mg=?, daily_water_ml=?, updated_at=datetime('now') WHERE id=?`,
+    [merged.daily_calories, merged.daily_protein_g, merged.daily_carbs_g, merged.daily_fat_g,
+      merged.daily_fiber_g, merged.daily_sugar_g, merged.daily_sodium_mg, merged.daily_water_ml, merged.id]
+  );
+  return text({ goals: await getGoals() });
 });
 
-// get_nutrition_goals
-server.tool('get_nutrition_goals', "Get the user's current daily calorie and macro targets", {}, () => {
-  return text(getGoals());
+server.tool('get_nutrition_goals', "Get the user's current daily calorie and macro targets", {}, async () => {
+  return text(await getGoals());
 });
 
-// get_goal_progress
 server.tool('get_goal_progress', 'Get progress against daily nutrition goals for a specific date', {
   date: z.string().optional().describe('YYYY-MM-DD, defaults to today'),
-}, (args) => {
-  const date = args.date ?? today();
-  const totals = dayTotals(date);
-  const goals = getGoals() as Record<string, number>;
+}, async (args) => {
+  const date = args.date ?? await today();
+  const totals = await dayTotals(date);
+  const goals = await getGoals();
   return text({
     date,
     calories: { goal: goals.daily_calories, eaten: totals.calories, remaining: goals.daily_calories - totals.calories, pct: Math.round((totals.calories / goals.daily_calories) * 100) },
@@ -221,69 +223,64 @@ server.tool('get_goal_progress', 'Get progress against daily nutrition goals for
   });
 });
 
-// get_nutrition_summary
 server.tool('get_nutrition_summary', 'Get daily nutrition totals for a date range', {
   start_date: z.string().describe('YYYY-MM-DD'),
   end_date: z.string().describe('YYYY-MM-DD'),
-}, (args) => {
-  const rows = db.prepare(`
-    SELECT date, SUM(calories) as calories, SUM(protein_g) as protein_g, SUM(carbs_g) as carbs_g, SUM(fat_g) as fat_g
-    FROM meals WHERE date BETWEEN ? AND ? GROUP BY date ORDER BY date
-  `).all(args.start_date, args.end_date) as Array<{ date: string; calories: number; protein_g: number; carbs_g: number; fat_g: number }>;
-  const goals = getGoals() as Record<string, number>;
-  return text({ rows: rows.map(r => ({ ...r, calorie_pct: Math.round((r.calories / goals.daily_calories) * 100) })), goals });
+}, async (args) => {
+  const rows = await all(
+    `SELECT date, SUM(calories) calories, SUM(protein_g) protein_g, SUM(carbs_g) carbs_g, SUM(fat_g) fat_g
+     FROM meals WHERE date BETWEEN ? AND ? GROUP BY date ORDER BY date`,
+    [args.start_date, args.end_date]
+  );
+  const goals = await getGoals();
+  return text({ rows: rows.map(r => ({ ...r, calorie_pct: Math.round((Number(r.calories) / goals.daily_calories) * 100) })), goals });
 });
 
-// log_water
 server.tool('log_water', 'Log a hydration entry', {
   amount_ml: z.number().min(1).describe('Amount in ml. Tip: 1 cup ≈ 240ml, 1 oz ≈ 30ml'),
   logged_at: z.string().optional().describe('YYYY-MM-DD, defaults to today'),
   notes: z.string().optional(),
-}, (args) => {
-  const date = args.logged_at ?? today();
-  const result = db.prepare('INSERT INTO water_logs (date,amount_ml,notes) VALUES (?,?,?)').run(date, args.amount_ml, args.notes ?? null);
-  const entry = db.prepare('SELECT * FROM water_logs WHERE id=?').get(result.lastInsertRowid);
-  const waterRow = db.prepare('SELECT COALESCE(SUM(amount_ml),0) as total FROM water_logs WHERE date=?').get(date) as { total: number };
-  const goals = getGoals() as Record<string, number>;
-  return text({ entry, day_total_ml: waterRow.total, goal_ml: goals.daily_water_ml, remaining_ml: goals.daily_water_ml - waterRow.total });
+}, async (args) => {
+  const date = args.logged_at ?? await today();
+  const rs = await run('INSERT INTO water_logs (date,amount_ml,notes) VALUES (?,?,?) RETURNING *', [date, args.amount_ml, args.notes ?? null]);
+  const w = (await get('SELECT COALESCE(SUM(amount_ml),0) total FROM water_logs WHERE date=?', [date]))!;
+  const goals = await getGoals();
+  return text({ entry: rs.rows[0], day_total_ml: Number(w.total), goal_ml: goals.daily_water_ml, remaining_ml: goals.daily_water_ml - Number(w.total) });
 });
 
-// get_water_today
-server.tool('get_water_today', "Get today's total water intake", {}, () => {
-  const date = today();
-  const logs = db.prepare('SELECT * FROM water_logs WHERE date=? ORDER BY logged_at').all(date);
-  const total = (logs as Array<{ amount_ml: number }>).reduce((s, l) => s + l.amount_ml, 0);
-  const goals = getGoals() as Record<string, number>;
+server.tool('get_water_today', "Get today's total water intake", {}, async () => {
+  const date = await today();
+  const logs = await all('SELECT * FROM water_logs WHERE date=? ORDER BY logged_at', [date]);
+  const total = logs.reduce((s, l) => s + Number(l.amount_ml), 0);
+  const goals = await getGoals();
   return text({ date, logs, total_ml: total, goal_ml: goals.daily_water_ml, remaining_ml: goals.daily_water_ml - total });
 });
 
-// get_water_by_date
 server.tool('get_water_by_date', 'Get water intake for a specific date', {
   date: z.string().describe('YYYY-MM-DD'),
-}, (args) => {
-  const logs = db.prepare('SELECT * FROM water_logs WHERE date=? ORDER BY logged_at').all(args.date);
-  const total = (logs as Array<{ amount_ml: number }>).reduce((s, l) => s + l.amount_ml, 0);
+}, async (args) => {
+  const logs = await all('SELECT * FROM water_logs WHERE date=? ORDER BY logged_at', [args.date]);
+  const total = logs.reduce((s, l) => s + Number(l.amount_ml), 0);
   return text({ date: args.date, logs, total_ml: total });
 });
 
-// delete_water
 server.tool('delete_water', 'Delete a water log entry by ID', {
   id: z.number().int(),
-}, (args) => {
-  const result = db.prepare('DELETE FROM water_logs WHERE id=?').run(args.id);
-  return text({ deleted: result.changes > 0, id: args.id });
+}, async (args) => {
+  const rs = await run('DELETE FROM water_logs WHERE id=?', [args.id]);
+  return text({ deleted: rs.rowsAffected > 0, id: args.id });
 });
 
-// get_trends
 server.tool('get_trends', 'Rolling averages, streaks, and daily breakdowns', {
   days: z.number().int().min(2).max(365).default(30),
   end_date: z.string().optional().describe('YYYY-MM-DD, defaults to today'),
-}, (args) => {
-  const end = args.end_date ?? today();
-  const rows = db.prepare(`
-    SELECT date, SUM(calories) as cal, SUM(protein_g) as pro, SUM(carbs_g) as carb, SUM(fat_g) as fat
-    FROM meals WHERE date<=? AND date>=date(?,'-'||?||' days') GROUP BY date ORDER BY date
-  `).all(end, end, args.days) as Array<{ date: string; cal: number; pro: number; carb: number; fat: number }>;
+}, async (args) => {
+  const end = args.end_date ?? await today();
+  const rows = (await all(
+    `SELECT date, SUM(calories) cal, SUM(protein_g) pro, SUM(carbs_g) carb, SUM(fat_g) fat
+     FROM meals WHERE date<=? AND date>=date(?,'-'||?||' days') GROUP BY date ORDER BY date`,
+    [end, end, args.days]
+  )).map(r => ({ date: r.date as string, cal: Number(r.cal), pro: Number(r.pro), carb: Number(r.carb), fat: Number(r.fat) }));
 
   if (rows.length === 0) return text({ message: 'No data in range', days: args.days, end_date: end });
 
@@ -301,16 +298,15 @@ server.tool('get_trends', 'Rolling averages, streaks, and daily breakdowns', {
   });
 });
 
-// get_meal_patterns
 server.tool('get_meal_patterns', 'Behavioural patterns: meal-type rates, weekday vs weekend', {
   days: z.number().int().min(7).max(365).default(30),
   end_date: z.string().optional(),
-}, (args) => {
-  const end = args.end_date ?? today();
-  const meals = db.prepare(`
-    SELECT date, meal_type, calories FROM meals
-    WHERE date<=? AND date>=date(?,'-'||?||' days')
-  `).all(end, end, args.days) as Array<{ date: string; meal_type: string; calories: number }>;
+}, async (args) => {
+  const end = args.end_date ?? await today();
+  const meals = (await all(
+    `SELECT date, meal_type, calories FROM meals WHERE date<=? AND date>=date(?,'-'||?||' days')`,
+    [end, end, args.days]
+  )).map(r => ({ date: r.date as string, meal_type: r.meal_type as string, calories: Number(r.calories) }));
 
   const dates = [...new Set(meals.map(m => m.date))];
   const loggedDays = dates.length;
@@ -321,10 +317,11 @@ server.tool('get_meal_patterns', 'Behavioural patterns: meal-type rates, weekday
     return { meal_type: type, days_logged: daysWithType, rate_pct: Math.round((daysWithType / loggedDays) * 100) };
   });
 
-  const weekdayCals = meals.filter(m => { const d = new Date(m.date + 'T00:00:00').getDay(); return d > 0 && d < 6; }).reduce((s, m) => s + m.calories, 0);
-  const weekendCals = meals.filter(m => { const d = new Date(m.date + 'T00:00:00').getDay(); return d === 0 || d === 6; }).reduce((s, m) => s + m.calories, 0);
-  const weekdayDays = dates.filter(d => { const day = new Date(d + 'T00:00:00').getDay(); return day > 0 && day < 6; }).length;
-  const weekendDays = dates.filter(d => { const day = new Date(d + 'T00:00:00').getDay(); return day === 0 || day === 6; }).length;
+  const isWeekend = (d: string) => { const day = new Date(d + 'T00:00:00').getDay(); return day === 0 || day === 6; };
+  const weekdayCals = meals.filter(m => !isWeekend(m.date)).reduce((s, m) => s + m.calories, 0);
+  const weekendCals = meals.filter(m => isWeekend(m.date)).reduce((s, m) => s + m.calories, 0);
+  const weekdayDays = dates.filter(d => !isWeekend(d)).length;
+  const weekendDays = dates.filter(isWeekend).length;
 
   return text({
     period: { days: args.days, logged_days: loggedDays },
@@ -334,11 +331,9 @@ server.tool('get_meal_patterns', 'Behavioural patterns: meal-type rates, weekday
   });
 });
 
-// export_meals
-server.tool('export_meals', 'Export all logged meals as CSV text', {}, () => {
-  const meals = db.prepare('SELECT * FROM meals ORDER BY date,logged_at').all() as Array<Record<string, unknown>>;
+server.tool('export_meals', 'Export all logged meals as CSV text', {}, async () => {
+  const meals = await all('SELECT * FROM meals ORDER BY date,logged_at');
   if (meals.length === 0) return text('No meals to export.');
-
   const headers = ['id', 'date', 'meal_type', 'description', 'calories', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g', 'sugar_g', 'sodium_mg', 'notes', 'logged_at'];
   const csv = [
     headers.join(','),
@@ -347,32 +342,30 @@ server.tool('export_meals', 'Export all logged meals as CSV text', {}, () => {
       return typeof v === 'string' && (v.includes(',') || v.includes('"')) ? `"${String(v).replace(/"/g, '""')}"` : v;
     }).join(',')),
   ].join('\n');
-
   return text(csv);
 });
 
-// set_timezone
 server.tool('set_timezone', "Set the user's IANA timezone for correct date grouping", {
   timezone: z.string().describe('IANA timezone identifier, e.g. America/New_York'),
-}, (args) => {
+}, async (args) => {
   try {
     Intl.DateTimeFormat(undefined, { timeZone: args.timezone });
   } catch {
     return text({ error: `Invalid timezone: ${args.timezone}` });
   }
-  db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('timezone',?)").run(args.timezone);
-  return text({ timezone: args.timezone, today: today() });
+  await run("INSERT OR REPLACE INTO settings (key,value) VALUES ('timezone',?)", [args.timezone]);
+  return text({ timezone: args.timezone, today: await today() });
 });
 
-// get_timezone
-server.tool('get_timezone', "Get the configured timezone", {}, () => {
-  const tz = (db.prepare("SELECT value FROM settings WHERE key='timezone'").get() as { value: string } | undefined)?.value ?? 'UTC (not set)';
-  return text({ timezone: tz });
+server.tool('get_timezone', 'Get the configured timezone', {}, async () => {
+  const tz = (await get("SELECT value FROM settings WHERE key='timezone'"))?.value as string | undefined;
+  return text({ timezone: tz ?? 'UTC (not set)' });
 });
 
 // ── Start ────────────────────────────────────────────────────────────────────
 
 async function main() {
+  await initDb();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
