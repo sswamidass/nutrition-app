@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-mfp-gray text-mfp-text;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+}
+
+@layer components {
+  .mfp-card {
+    @apply bg-white rounded shadow-sm border border-mfp-border;
+  }
+
+  .mfp-section-header {
+    @apply flex items-center justify-between px-4 py-2 bg-mfp-navy text-white text-sm font-bold tracking-wider uppercase;
+  }
+
+  .mfp-btn-primary {
+    @apply bg-mfp-blue hover:bg-mfp-blue-dark text-white text-sm font-semibold px-4 py-2 rounded transition-colors;
+  }
+
+  .mfp-btn-ghost {
+    @apply text-mfp-blue hover:text-mfp-blue-dark text-sm font-medium transition-colors;
+  }
+
+  .progress-bar-track {
+    @apply h-2 bg-gray-200 rounded-full overflow-hidden;
+  }
+
+  .progress-bar-fill {
+    @apply h-full rounded-full transition-all duration-300;
+  }
+}
