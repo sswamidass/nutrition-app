@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "mcp": "npx tsx mcp/index.ts"
+    "mcp": "npx tsx mcp/index.ts",
+    "seed": "npx tsx scripts/seed.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
