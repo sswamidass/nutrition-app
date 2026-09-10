@@ -36,8 +36,22 @@
     { name: "Jabrom and Iniya", size: 4, status: "yes", adults: 2, kids: 2 },
     { name: "Lila", size: 3, status: "yes", adults: 2, kids: 1 },
     { name: "Ava", size: 2, status: "yes", adults: 1, kids: 1 },
-    { name: "Aiden", size: 2, status: "yes", adults: 1, kids: 1 }
+    { name: "Aiden", size: 2, status: "yes", adults: 1, kids: 1 },
+    { name: "Ryker", size: 2, status: "yes", adults: 1, kids: 1 },
+    { name: "Antonia", size: 2, status: "yes", adults: 1, kids: 1 },
+    { name: "Izzy, Penelope, Luca", size: 5, status: "yes", adults: 2, kids: 3 },
+    { name: "Charlotte", size: 2, status: "yes", adults: 1, kids: 1 },
+    { name: "Anthony & Gracie", size: 2, status: "yes", adults: 0, kids: 2 }
   ];
+
+  // Bumped whenever families are added to seedGuests above, so a browser that
+  // already saved an older list picks up the new ones without losing edits.
+  const SEED_VERSION = 2;
+
+  // Everything below this index in seedGuests shipped before SEED_VERSION.
+  // An upgrade only looks past this mark, so a family deleted by hand is
+  // never resurrected by a later top-up.
+  const SEED_ADDED_FROM = 30;
 
   const STORES = [
     {
@@ -83,6 +97,7 @@
     shopping: 'bpp.shopping.v1',
     pickup: 'bpp.pickup.v1',
     games: 'bpp.games.v1',
+    seedVersion: 'bpp.seedVersion.v1',
     tab: 'bpp.tab.v1'
   };
 
@@ -105,10 +120,24 @@
      State
      ------------------------------------------------------------------ */
 
+  const freshSeed = () => seedGuests.map((g, i) => Object.assign({ id: 'g' + (i + 1) }, g));
+
   let guests = read(KEYS.guests, null);
+  let seedVersion = read(KEYS.seedVersion, 0);
+
   if (!Array.isArray(guests) || !guests.length) {
-    guests = seedGuests.map((g, i) => Object.assign({ id: 'g' + (i + 1) }, g));
+    guests = freshSeed();
     write(KEYS.guests, guests);
+    write(KEYS.seedVersion, SEED_VERSION);
+  } else if (seedVersion < SEED_VERSION) {
+    // Top up with families added to the seed list since this browser first
+    // loaded it. Only entries past SEED_ADDED_FROM are considered, and an id
+    // already present is skipped, so nothing is duplicated or brought back.
+    const known = {};
+    guests.forEach(g => { known[g.id] = true; });
+    freshSeed().slice(SEED_ADDED_FROM).forEach(g => { if (!known[g.id]) guests.push(g); });
+    write(KEYS.guests, guests);
+    write(KEYS.seedVersion, SEED_VERSION);
   }
   guests.forEach((g, i) => {
     if (!g.id) g.id = 'g' + (i + 1) + '-' + Math.random().toString(36).slice(2, 7);
@@ -135,10 +164,10 @@
      People helpers — one chip per human
      ------------------------------------------------------------------ */
 
-  const SEP_SPLIT = /\s*(?:&|\+|\band\b)\s*/i;
+  const SEP_SPLIT = /\s*(?:,|&|\+|\band\b)\s*/i;
 
   function splitName(name) {
-    const match = String(name).match(/\s*(&|\+|\band\b)\s*/i);
+    const match = String(name).match(/\s*(,|&|\+|\band\b)\s*/i);
     if (!match) return { parts: [String(name).trim()], sep: null };
     const parts = String(name).split(SEP_SPLIT).map(s => s.trim()).filter(Boolean);
     if (parts.length < 2) return { parts: [String(name).trim()], sep: null };
