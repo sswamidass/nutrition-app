@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#E33A6E">
+<title>Birthday Party Planner</title>
+<meta name="description" content="A pocket-sized planner for a kids' birthday party: RSVPs, headcounts, shopping, pickups and games.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎈</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-balloon" aria-hidden="true">🎈</span>
+      <div class="brand-text">
+        <h1>Party Planner</h1>
+        <p class="brand-sub" id="brandSub">Loading&hellip;</p>
+      </div>
+    </div>
+  </div>
+  <nav class="tabs" id="tabs" aria-label="Sections">
+    <button class="tab" data-tab="rsvp" aria-current="true">RSVPs</button>
+    <button class="tab" data-tab="people">Kids &amp; Adults</button>
+    <button class="tab" data-tab="shopping">Shopping List</button>
+    <button class="tab" data-tab="pickup">Pickup</button>
+    <button class="tab" data-tab="games">Games</button>
+  </nav>
+</header>
+
+<main id="main">
+
+  <!-- ============ RSVPs ============ -->
+  <section class="panel" id="panel-rsvp">
+    <div class="tally" id="rsvpTally">
+      <div class="tally-big"><span id="rsvpTotal">0</span></div>
+      <div class="tally-label">guests confirmed<br><span class="tally-sub" id="rsvpFamilies">0 families coming</span></div>
+    </div>
+
+    <div class="filters" id="rsvpFilters">
+      <button class="chip-filter is-active" data-filter="all">All <span class="count" id="cnt-all">0</span></button>
+      <button class="chip-filter" data-filter="yes">Coming <span class="count" id="cnt-yes">0</span></button>
+      <button class="chip-filter" data-filter="pending">Pending <span class="count" id="cnt-pending">0</span></button>
+      <button class="chip-filter" data-filter="no">Not coming <span class="count" id="cnt-no">0</span></button>
+    </div>
+
+    <ul class="rows" id="guestList"></ul>
+
+    <form class="add-row" id="addGuestForm" autocomplete="off">
+      <input type="text" id="addGuestName" placeholder="Add another guest&hellip;" aria-label="New guest name" maxlength="40">
+      <button type="submit" class="btn-add" aria-label="Add guest">+</button>
+    </form>
+  </section>
+
+  <!-- ============ Kids & Adults ============ -->
+  <section class="panel" id="panel-people" hidden>
+    <div class="split-tally">
+      <div class="split-half kid-half">
+        <span class="split-num" id="kidTotal">0</span>
+        <span class="split-word">kids 🧒</span>
+      </div>
+      <div class="split-half adult-half">
+        <span class="split-num" id="adultTotal">0</span>
+        <span class="split-word">adults 🧑</span>
+      </div>
+    </div>
+    <p class="hint">Tap any name to flip it between kid and adult.</p>
+    <div id="familyList"></div>
+  </section>
+
+  <!-- ============ Shopping ============ -->
+  <section class="panel" id="panel-shopping" hidden>
+    <div class="progress-line">
+      <span id="shopProgressText">0 of 0 picked up</span>
+      <span class="bar"><span class="bar-fill" id="shopBar"></span></span>
+    </div>
+    <div id="shoppingList"></div>
+  </section>
+
+  <!-- ============ Pickup ============ -->
+  <section class="panel" id="panel-pickup" hidden>
+    <div class="due-banner">
+      <span class="due-word">Due</span>
+      <span class="due-date" id="dueDate">Sunday</span>
+    </div>
+    <ul class="rows" id="pickupList"></ul>
+  </section>
+
+  <!-- ============ Games ============ -->
+  <section class="panel" id="panel-games" hidden>
+    <h2 class="game-title"><span class="dot dot-sky"></span>Pass the parcel</h2>
+    <div class="parcel-box">
+      <div class="parcel-row">
+        <label for="parcelCount">Number of parcels</label>
+        <div class="stepper">
+          <button type="button" class="step" id="parcelMinus" aria-label="One fewer parcel">&minus;</button>
+          <input type="number" id="parcelCount" min="0" max="99" inputmode="numeric" value="1">
+          <button type="button" class="step" id="parcelPlus" aria-label="One more parcel">+</button>
+        </div>
+      </div>
+      <p class="rule">10 prizes go inside each parcel.</p>
+      <div class="prize-total">
+        <span class="prize-num" id="prizeTotal">10</span>
+        <span class="prize-label">prizes needed in total</span>
+      </div>
+      <ul class="rows tight">
+        <li class="row check-row" data-games-check="prizesBought">
+          <button type="button" class="checkbox" aria-pressed="false"><span class="tick">✓</span></button>
+          <span class="check-label">Prizes bought</span>
+        </li>
+      </ul>
+    </div>
+
+    <h2 class="game-title"><span class="dot dot-sun"></span>Pi&ntilde;ata</h2>
+    <p class="hint">Placeholders &mdash; tap the text to rename anything.</p>
+    <ul class="rows" id="pinataList"></ul>
+    <form class="add-row" id="addPinataForm" autocomplete="off">
+      <input type="text" id="addPinataText" placeholder="Add a pi&ntilde;ata to-do&hellip;" aria-label="New piñata item" maxlength="60">
+      <button type="submit" class="btn-add" aria-label="Add item">+</button>
+    </form>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <button type="button" id="resetBtn" class="reset">Reset everything to the original list</button>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
