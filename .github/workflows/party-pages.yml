@@ -1,0 +1,40 @@
+name: Deploy party planner to GitHub Pages
+
+# Publishes only the party/ folder. The Next.js app in this repo is
+# untouched and keeps deploying through Vercel.
+on:
+  push:
+    branches: [claude/party-planner]
+    paths:
+      - 'party/**'
+      - '.github/workflows/party-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Turn on Pages and configure it for this repo
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: Package the planner
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./party
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
