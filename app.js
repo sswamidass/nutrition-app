@@ -59,7 +59,8 @@
         'Toilet paper', 'Dishwasher detergent', 'Eggs', 'Egg whites', 'Cottage cheese',
         'Blueberries', 'Milk', 'Bread', 'Bananas', 'Juice for kids', 'Drinks for adults',
         'Costco pizza', 'Veggie tray', 'Fruit snacks', 'Apple pie', 'Popcorn', 'Soap',
-        'Comforter', 'Light bulbs'
+        'Comforter', 'Light bulbs', 'Eye patches', 'Yogurt', 'Frozen blueberries',
+        'Love Crunch red berries and chocolate'
       ]
     },
     {
