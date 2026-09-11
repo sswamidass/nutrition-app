@@ -18,12 +18,12 @@
     { name: "Calvin", size: 4, status: "yes", adults: 2, kids: 2 },
     { name: "Chloe", size: 3, status: "yes", adults: 2, kids: 1 },
     { name: "Sara & Sanjay", size: 4, status: "yes", adults: 2, kids: 2 },
-    { name: "Gemma", size: 2, status: "yes", adults: 1, kids: 1 },
+    { name: "Gemma", size: 4, status: "yes", adults: 2, kids: 2 },
     { name: "Bailey", size: 4, status: "no" },
-    { name: "Evelyn", size: 4, status: "yes", adults: 2, kids: 2 },
+    { name: "Evelyn", size: 6, status: "yes", adults: 2, kids: 4 },
     { name: "Evelyn", size: 2, status: "no" },
     { name: "Casey", size: 2, status: "yes", adults: 1, kids: 1 },
-    { name: "Hannah & Mason", size: 4, status: "yes", adults: 2, kids: 2 },
+    { name: "Hannah & Mason", size: 3, status: "yes", adults: 1, kids: 2 },
     { name: "Adeline", size: 2, status: "yes", adults: 1, kids: 1 },
     { name: "Addy", size: 2, status: "yes", adults: 1, kids: 1 },
     { name: "Declan", size: 1, status: "no" },
@@ -41,17 +41,26 @@
     { name: "Antonia", size: 2, status: "yes", adults: 1, kids: 1 },
     { name: "Izzy, Penelope, Luca", size: 5, status: "yes", adults: 2, kids: 3 },
     { name: "Charlotte", size: 2, status: "yes", adults: 1, kids: 1 },
-    { name: "Anthony & Gracie", size: 2, status: "yes", adults: 0, kids: 2 }
+    { name: "Anthony & Gracie", size: 2, status: "pending", adults: 0, kids: 2 },
+    { name: "Natasha, Jessalyn", size: 4, status: "yes", adults: 3, kids: 1 },
+    { name: "Jordan", size: 2, status: "yes", adults: 1, kids: 1 },
+    { name: "Charlotte", size: 2, status: "yes", adults: 1, kids: 1 }
   ];
 
-  // Bumped whenever families are added to seedGuests above, so a browser that
-  // already saved an older list picks up the new ones without losing edits.
-  const SEED_VERSION = 2;
+  // Bumped whenever seedGuests above changes, so a browser that already saved
+  // an older list catches up without losing what was edited on that device.
+  const SEED_VERSION = 3;
 
-  // Everything below this index in seedGuests shipped before SEED_VERSION.
-  // An upgrade only looks past this mark, so a family deleted by hand is
-  // never resurrected by a later top-up.
-  const SEED_ADDED_FROM = 30;
+  // How long seedGuests was before each version. An upgrade only adds entries
+  // past that mark, so a family deleted by hand is never resurrected.
+  const SEED_ADDED_FROM = { 2: 30, 3: 35 };
+
+  // Families whose size, split or status was corrected in a given version.
+  // These are re-applied over the stored copy, because a correction comes from
+  // an updated headcount that should win over older saved numbers.
+  const SEED_REVISED = {
+    3: ['g12', 'g14', 'g17', 'g35']   // Gemma, Evelyn, Hannah & Mason, Anthony & Gracie
+  };
 
   const STORES = [
     {
@@ -131,12 +140,33 @@
     write(KEYS.guests, guests);
     write(KEYS.seedVersion, SEED_VERSION);
   } else if (seedVersion < SEED_VERSION) {
-    // Top up with families added to the seed list since this browser first
-    // loaded it. Only entries past SEED_ADDED_FROM are considered, and an id
-    // already present is skipped, so nothing is duplicated or brought back.
+    // Walk each seed version this browser has not seen yet, re-applying that
+    // version's corrections and adding only the families it introduced.
+    const seed = freshSeed();
+    const seedById = {};
+    seed.forEach(g => { seedById[g.id] = g; });
     const known = {};
     guests.forEach(g => { known[g.id] = true; });
-    freshSeed().slice(SEED_ADDED_FROM).forEach(g => { if (!known[g.id]) guests.push(g); });
+
+    for (let v = seedVersion + 1; v <= SEED_VERSION; v++) {
+      (SEED_REVISED[v] || []).forEach(id => {
+        const stored = guests.filter(g => g.id === id)[0];
+        const fresh = seedById[id];
+        if (!stored || !fresh) return;
+        stored.name = fresh.name;
+        stored.size = fresh.size;
+        stored.status = fresh.status;
+        stored.adults = fresh.adults;
+        stored.kids = fresh.kids;
+        delete stored.people;          // chips rebuild from the corrected split
+      });
+      const addedFrom = SEED_ADDED_FROM[v];
+      if (typeof addedFrom === 'number') {
+        seed.slice(addedFrom).forEach(g => {
+          if (!known[g.id]) { guests.push(g); known[g.id] = true; }
+        });
+      }
+    }
     write(KEYS.guests, guests);
     write(KEYS.seedVersion, SEED_VERSION);
   }
