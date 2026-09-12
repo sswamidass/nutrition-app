@@ -546,7 +546,30 @@ main { max-width: 640px; margin: 0 auto; padding: 22px var(--pad) 0; }
 
 /* ---------------- footer ---------------- */
 
-.foot { max-width: 640px; margin: 0 auto; padding: 32px var(--pad) 10px; text-align: center; }
+.foot {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 32px var(--pad) 10px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.export-box {
+  width: 100%;
+  min-height: 190px;
+  border: 2px dotted var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  resize: vertical;
+  text-align: left;
+}
 .reset {
   border: 0;
   background: transparent;

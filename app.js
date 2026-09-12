@@ -677,6 +677,78 @@
   });
 
   /* ------------------------------------------------------------------
+     Export — hand the live list to someone else
+     ------------------------------------------------------------------ */
+
+  const STATUS_HEADING = [
+    { key: 'yes', label: 'COMING' },
+    { key: 'pending', label: 'PENDING' },
+    { key: 'no', label: 'NOT COMING' }
+  ];
+
+  function guestListText() {
+    const hc = headcount();
+    const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+    const lines = ['Party guest list'];
+    lines.push(plural(comingCount(), 'guest') + ' confirmed: ' +
+               plural(hc.kids, 'kid') + ' and ' + plural(hc.adults, 'adult'));
+
+    STATUS_HEADING.forEach(group => {
+      const rows = guests.filter(g => g.status === group.key);
+      if (!rows.length) return;
+      lines.push('');
+      lines.push(group.label + ' (' + rows.length + ')');
+      rows.forEach(g => {
+        if (group.key !== 'yes') {
+          lines.push('- ' + g.name + ': ' + g.size);
+          return;
+        }
+        syncPeople(g);
+        const kids = g.people.filter(p => p.type === 'kid').length;
+        const adults = g.people.length - kids;
+        lines.push('- ' + g.name + ': ' + g.size +
+                   ' (' + plural(adults, 'adult') + ', ' + plural(kids, 'kid') + ')');
+      });
+    });
+    return lines.join('\n');
+  }
+
+  const copyBtn = $('#copyBtn');
+  const exportBox = $('#exportBox');
+  let copyResetTimer = null;
+
+  function showExportBox(text) {
+    exportBox.value = text;
+    exportBox.hidden = false;
+    exportBox.focus();
+    exportBox.setSelectionRange(0, text.length);
+    exportBox.scrollTop = 0;   // selecting to the end scrolls it there
+  }
+
+  function flashCopied(message) {
+    copyBtn.textContent = message;
+    window.clearTimeout(copyResetTimer);
+    copyResetTimer = window.setTimeout(() => {
+      copyBtn.textContent = 'Copy the guest list as text';
+    }, 2600);
+  }
+
+  copyBtn.addEventListener('click', () => {
+    const text = guestListText();
+    // The clipboard is blocked in some embedded and older browsers, so fall
+    // back to showing the text already selected for a manual copy.
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => { exportBox.hidden = true; flashCopied('Copied to the clipboard'); },
+        () => { showExportBox(text); flashCopied('Select the text below to copy'); }
+      );
+    } else {
+      showExportBox(text);
+      flashCopied('Select the text below to copy');
+    }
+  });
+
+  /* ------------------------------------------------------------------
      Reset
      ------------------------------------------------------------------ */
 
